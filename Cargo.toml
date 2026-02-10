@@ -1,0 +1,57 @@
+[package]
+name = "verifiablex402"
+version = "0.1.0"
+edition = "2021"
+description = "x402 Transaction Integrity Analyzer — classifies wallet transaction patterns on Base mainnet with zkML proof verification."
+license = "MIT"
+
+[lib]
+name = "verifiablex402"
+path = "src/lib.rs"
+
+[[bin]]
+name = "verifiablex402"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+hex = "0.4"
+eyre = "0.6"
+dirs = "6.0"
+base64 = "0.22"
+
+# Cryptographic RNG
+rand = "0.8"
+
+# HTTP server
+axum = "0.8"
+tokio = { version = "1.43", features = ["full"] }
+
+# CORS
+tower-http = { version = "0.6", features = ["cors"] }
+
+# Structured logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Rate limiting
+governor = "0.6"
+
+# HTTP client for Base RPC
+reqwest = { version = "0.12", features = ["json"] }
+
+# ABI decoding for ERC-3009 events
+alloy-primitives = "0.8"
+alloy-sol-types = "0.8"
+
+# jolt-atlas dependencies for proof generation
+zkml-jolt-core = { path = "../zkml-jolt-core" }
+onnx-tracer = { path = "../onnx-tracer" }
+ark-bn254 = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-serialize = { workspace = true }
+jolt-core = { git = "https://github.com/ICME-Lab/zkml-jolt", branch = "dev", package = "jolt-core", default-features = true }
