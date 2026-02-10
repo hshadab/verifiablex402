@@ -32,6 +32,6 @@ WORKDIR /app
 
 ENV RUST_LOG=verifiablex402=info
 
-EXPOSE 8080
+EXPOSE 10000
 
-CMD ["verifiablex402", "serve", "--bind", "0.0.0.0:8080"]
+CMD ["verifiablex402", "serve", "--bind", "0.0.0.0:10000"]
