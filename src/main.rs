@@ -25,7 +25,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Analyze a single wallet's transaction integrity
+    /// Analyze a single wallet's transaction integrity (always generates ZK proof)
     Analyze {
         /// Wallet address to analyze
         #[arg(long)]
@@ -34,10 +34,6 @@ enum Commands {
         /// Path to wallet activity JSON file (alternative to --wallet for offline analysis)
         #[arg(long)]
         input: Option<PathBuf>,
-
-        /// Generate a zero-knowledge proof
-        #[arg(long, default_value_t = false)]
-        prove: bool,
 
         /// Base RPC URL
         #[arg(long, default_value = "https://mainnet.base.org")]
@@ -56,15 +52,11 @@ enum Commands {
         output: Option<PathBuf>,
     },
 
-    /// Batch analysis from a file of wallet addresses
+    /// Batch analysis from a file of wallet addresses (always generates ZK proofs)
     Scan {
         /// Path to file with wallet addresses (one per line)
         #[arg(long)]
         input: PathBuf,
-
-        /// Generate proofs for each wallet
-        #[arg(long, default_value_t = false)]
-        prove: bool,
 
         /// Base RPC URL
         #[arg(long, default_value = "https://mainnet.base.org")]
@@ -97,7 +89,7 @@ enum Commands {
         verify_proof: bool,
     },
 
-    /// Start the HTTP server
+    /// Start the HTTP server (all evaluations include ZK proofs)
     Serve {
         /// Address to bind to
         #[arg(long)]
@@ -106,10 +98,6 @@ enum Commands {
         /// Maximum concurrent proof generations
         #[arg(long)]
         max_proofs: Option<usize>,
-
-        /// Require proof generation for all requests
-        #[arg(long, default_value_t = false)]
-        require_proof: bool,
 
         /// Rate limit in requests per minute per IP (0 = no limit)
         #[arg(long)]
@@ -149,7 +137,6 @@ struct AnalyzeResult {
 fn cmd_analyze(
     wallet: String,
     input: Option<PathBuf>,
-    prove: bool,
     rpc_url: String,
     lookback: u64,
     format: String,
@@ -170,13 +157,12 @@ fn cmd_analyze(
     let tx_count = activity.transactions.len();
     eprintln!("Found {} transactions", tx_count);
 
-    // Extract features and run guardrail
+    // Extract features and run guardrail (always generates ZK proof)
     let features = TransactionFeatures::extract(&activity);
     let (receipt, _proof_path) = verifiablex402::run_guardrail(
         &features,
         &activity.wallet_address,
         activity.chain_id,
-        prove,
     )?;
 
     // Format output
@@ -195,7 +181,7 @@ fn cmd_analyze(
                     .unwrap_or_default(),
                 tx_count,
                 receipt_id: Some(receipt.receipt_id.clone()),
-                proof_generated: if prove { Some(true) } else { None },
+                proof_generated: Some(true),
                 model_hash: receipt.guardrail.model_hash.clone(),
                 timestamp: Utc::now().to_rfc3339(),
             };
@@ -272,7 +258,6 @@ fn cmd_analyze(
 
 fn cmd_scan(
     input: PathBuf,
-    prove: bool,
     rpc_url: String,
     output_dir: Option<PathBuf>,
 ) -> Result<()> {
@@ -315,7 +300,7 @@ fn cmd_scan(
                     };
 
                     let features = TransactionFeatures::extract(&activity);
-                    match verifiablex402::run_guardrail(&features, &wallet, 8453, prove) {
+                    match verifiablex402::run_guardrail(&features, &wallet, 8453) {
                         Ok((receipt, _)) => {
                             println!(
                                 "{}: {} ({}, {:.1}% confidence)",
@@ -553,7 +538,6 @@ fn verify_receipt_proof(receipt: &GuardrailReceipt) -> Result<bool> {
 fn cmd_serve(
     bind: Option<String>,
     max_proofs: Option<usize>,
-    require_proof: bool,
     rate_limit: Option<u32>,
     rpc_url: Option<String>,
     require_payment: Option<bool>,
@@ -584,7 +568,6 @@ fn cmd_serve(
     let config = ServerConfig {
         bind_addr,
         max_concurrent_proofs,
-        require_proof,
         rate_limit_rpm,
         rpc_url: rpc,
         require_payment: payment,
@@ -645,12 +628,11 @@ fn main() {
         Commands::Analyze {
             wallet,
             input,
-            prove,
             rpc_url,
             lookback,
             format,
             output,
-        } => match cmd_analyze(wallet, input, prove, rpc_url, lookback, format, output) {
+        } => match cmd_analyze(wallet, input, rpc_url, lookback, format, output) {
             Ok(code) => {
                 if code != 0 {
                     std::process::exit(code);
@@ -661,10 +643,9 @@ fn main() {
         },
         Commands::Scan {
             input,
-            prove,
             rpc_url,
             output_dir,
-        } => cmd_scan(input, prove, rpc_url, output_dir),
+        } => cmd_scan(input, rpc_url, output_dir),
         Commands::Verify { proof, model_hash } => cmd_verify(proof, model_hash),
         Commands::VerifyReceipt {
             input,
@@ -673,11 +654,10 @@ fn main() {
         Commands::Serve {
             bind,
             max_proofs,
-            require_proof,
             rate_limit,
             rpc_url,
             require_payment,
-        } => cmd_serve(bind, max_proofs, require_proof, rate_limit, rpc_url, require_payment),
+        } => cmd_serve(bind, max_proofs, rate_limit, rpc_url, require_payment),
         Commands::Models => cmd_models(),
     };
 

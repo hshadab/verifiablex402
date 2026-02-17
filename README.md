@@ -105,11 +105,12 @@ The result is packaged into a Guardrail Receipt — a JSON document containing:
 - **Payment info** — optional x402 payment details (network, asset, amount,
   payer, payee, tx hash) if the evaluation was paid for.
 
-### Step 6: Generate a ZK proof (optional)
+### Step 6: Generate a ZK proof (mandatory)
 
-If `--prove` or `generate_proof: true` is specified, the system generates a
-zero-knowledge proof using JOLT Atlas with Dory polynomial commitments. This
-proves that the neural network was executed correctly on the committed inputs.
+Every evaluation generates a zero-knowledge proof using JOLT Atlas with Dory
+polynomial commitments. This proves that the neural network was executed
+correctly on the committed inputs. Proofs are mandatory — there is no way to
+skip proof generation.
 
 The proof system works like this:
 
@@ -258,11 +259,8 @@ replacing the existing `W1`, `B1`, `W2`, `B2`, `W3`, `B3` arrays. Then rebuild.
 ### 4. Analyze a wallet
 
 ```bash
-# Analyze a wallet address (fetches from Base mainnet via RPC)
+# Analyze a wallet address (fetches from Base mainnet, always generates ZK proof)
 verifiablex402 analyze --wallet 0xYourWalletAddress
-
-# With ZK proof generation
-verifiablex402 analyze --wallet 0xYourWalletAddress --prove
 
 # Output as JSON
 verifiablex402 analyze --wallet 0xYourWalletAddress --format json
@@ -346,9 +344,11 @@ Example request to `/guardrail/integrity`:
       }
     ]
   },
-  "generate_proof": false
 }
 ```
+
+Note: ZK proofs are always generated for every evaluation. The `generate_proof`
+field is accepted but ignored for backward compatibility.
 
 Example request to `/api/v1/scan`:
 
@@ -356,7 +356,6 @@ Example request to `/api/v1/scan`:
 {
   "wallet_address": "0xabc...",
   "lookback_blocks": 302400,
-  "generate_proof": false,
   "payment": {
     "network": "eip155:8453",
     "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
@@ -374,11 +373,14 @@ Server flags:
 ```
 --bind ADDR              Address to listen on (default: 127.0.0.1:8080)
 --max-proofs N           Max concurrent ZK proof generations (default: 4)
---require-proof          Require proof for every request
 --rate-limit N           Requests per minute per IP, 0 = unlimited (default: 60)
 --rpc-url URL            Base RPC endpoint (default: https://mainnet.base.org)
 --require-payment        Enable x402 payment gating
 ```
+
+ZK proofs are mandatory for all evaluations — every response includes a JOLT
+Atlas proof. The `--max-proofs` flag controls concurrency to manage resource
+usage.
 
 All server flags can also be set via a config file (see below).
 

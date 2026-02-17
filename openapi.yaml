@@ -187,7 +187,8 @@ components:
           default: 8453
         generate_proof:
           type: boolean
-          default: false
+          deprecated: true
+          description: "Ignored — ZK proofs are always generated. Kept for backward compatibility."
         payment:
           $ref: "#/components/schemas/PaymentInfo"
 
@@ -204,7 +205,8 @@ components:
           description: "Number of blocks to look back (~7 days at 2s/block)"
         generate_proof:
           type: boolean
-          default: false
+          deprecated: true
+          description: "Ignored — ZK proofs are always generated. Kept for backward compatibility."
         payment:
           $ref: "#/components/schemas/PaymentInfo"
 

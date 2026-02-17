@@ -126,12 +126,12 @@ pub fn proof_dir() -> PathBuf {
 
 /// Run the transaction integrity guardrail on a feature vector.
 ///
-/// Returns (classification, confidence, model_hash, receipt, optional proof_path).
+/// Always generates a JOLT Atlas ZK proof alongside the classification.
+/// Returns (receipt, proof_path).
 pub fn run_guardrail(
     features: &TransactionFeatures,
     wallet_address: &str,
     chain_id: u64,
-    generate_proof: bool,
 ) -> Result<(GuardrailReceipt, Option<PathBuf>)> {
     let guard = GuardModel::TxIntegrity;
     let model_fn = guard.model_fn();
@@ -178,41 +178,38 @@ pub fn run_guardrail(
     let scores_array = scores.to_array();
     let (decision, reasoning) = derive_decision(classification, &scores_array, confidence);
 
-    // Generate proof if requested
-    let (proof_bytes_str, vk_hash, prove_time, program_io_str, proof_path) = if generate_proof {
-        let proof_directory = proof_dir();
-        let max_trace_length = guard.max_trace_length();
+    // Always generate JOLT Atlas ZK proof
+    let proof_directory = proof_dir();
+    let max_trace_length = guard.max_trace_length();
 
-        let input_for_proof = Tensor::new(Some(&feature_vec), &[1, 24])
-            .map_err(|e| eyre::eyre!("tensor error: {:?}", e))?;
+    let input_for_proof = Tensor::new(Some(&feature_vec), &[1, 24])
+        .map_err(|e| eyre::eyre!("tensor error: {:?}", e))?;
 
-        let (path, _program_io) = proving::prove_and_save(
-            model_fn,
-            &input_for_proof,
-            &proof_directory,
-            &model_hash,
-            max_trace_length,
-            guard.name(),
-        )?;
+    let (path, _program_io) = proving::prove_and_save(
+        model_fn,
+        &input_for_proof,
+        &proof_directory,
+        &model_hash,
+        max_trace_length,
+        guard.name(),
+    )?;
 
-        // Read proof file to extract proof bytes and program_io
-        let proof_content = std::fs::read_to_string(&path)?;
-        let proof_json: serde_json::Value = serde_json::from_str(&proof_content)?;
+    // Read proof file to extract proof bytes and program_io
+    let proof_content = std::fs::read_to_string(&path)?;
+    let proof_json: serde_json::Value = serde_json::from_str(&proof_content)?;
 
-        let pb = proof_json
-            .get("proof")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let pio = proof_json
-            .get("program_io")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        (pb, model_hash.clone(), None, pio, Some(path))
-    } else {
-        ("".to_string(), "".to_string(), None, None, None)
-    };
+    let proof_bytes_str = proof_json
+        .get("proof")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let program_io_str = proof_json
+        .get("program_io")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let vk_hash = model_hash.clone();
+    let prove_time: Option<u64> = None;
+    let proof_path = Some(path);
 
     let nonce = generate_nonce();
 

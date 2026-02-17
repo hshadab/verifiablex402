@@ -30,8 +30,6 @@ pub struct ServerConfig {
     pub bind_addr: SocketAddr,
     /// Maximum concurrent proof generations
     pub max_concurrent_proofs: usize,
-    /// Whether to require proof generation
-    pub require_proof: bool,
     /// Rate limit in requests per minute per IP (0 = no limit)
     pub rate_limit_rpm: u32,
     /// Base RPC URL for wallet scanning
@@ -59,7 +57,6 @@ impl Default for ServerConfig {
         Self {
             bind_addr: "127.0.0.1:8080".parse().unwrap(),
             max_concurrent_proofs: 4,
-            require_proof: false,
             rate_limit_rpm: 60,
             rpc_url: "https://mainnet.base.org".to_string(),
             require_payment: false,
@@ -81,9 +78,10 @@ pub struct IntegrityRequest {
     #[serde(flatten)]
     pub input: IntegrityInput,
 
-    /// Whether to generate a ZK proof
+    /// Ignored — proofs are always generated. Kept for API backward compatibility.
     #[serde(default)]
-    pub generate_proof: bool,
+    #[allow(dead_code)]
+    pub generate_proof: Option<bool>,
 
     /// Optional payment information
     #[serde(default)]
@@ -130,9 +128,10 @@ pub struct ScanWalletRequest {
     /// Number of blocks to look back (default: ~7 days at 2s/block)
     #[serde(default = "default_lookback")]
     pub lookback_blocks: u64,
-    /// Whether to generate a ZK proof
+    /// Ignored — proofs are always generated. Kept for API backward compatibility.
     #[serde(default)]
-    pub generate_proof: bool,
+    #[allow(dead_code)]
+    pub generate_proof: Option<bool>,
     /// Optional payment information
     #[serde(default)]
     pub payment: Option<PaymentInfo>,
@@ -501,8 +500,8 @@ async fn integrity_handler(
 
     tracing::info!(%wallet_address, %chain_id, "evaluating wallet integrity");
 
-    // Run the guardrail
-    match crate::run_guardrail(&features, &wallet_address, chain_id, request.generate_proof) {
+    // Run the guardrail (always generates ZK proof)
+    match crate::run_guardrail(&features, &wallet_address, chain_id) {
         Ok((mut receipt, _proof_path)) => {
             let classification = receipt.evaluation.classification.clone();
             let decision = receipt.evaluation.decision.clone();
@@ -674,7 +673,6 @@ async fn scan_handler(
         &features,
         wallet_address,
         8453,
-        request.generate_proof,
     ) {
         Ok((mut receipt, _proof_path)) => {
             let classification = receipt.evaluation.classification.clone();
