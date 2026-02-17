@@ -1,3 +1,7 @@
+# NOTE: Docker build context must be the jolt-atlas workspace root.
+#   docker build -t verifiablex402 -f verifiablex402/Dockerfile .
+# For Render deployment, the build context should point to the workspace root
+# containing Cargo.toml, onnx-tracer/, zkml-jolt-core/, and verifiablex402/.
 services:
   - type: web
     name: verifiablex402

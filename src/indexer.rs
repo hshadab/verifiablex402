@@ -7,8 +7,8 @@ use eyre::{Result, WrapErr};
 
 use crate::transaction::{WalletActivity, X402Transaction};
 
-/// USDC contract address on Base mainnet
-const USDC_BASE: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+/// Default USDC contract address on Base mainnet
+pub const DEFAULT_USDC_BASE: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 
 /// ERC-3009 TransferWithAuthorization event topic
 /// keccak256("TransferWithAuthorization(address,address,uint256,uint256,uint256,bytes32,bytes)")
@@ -23,10 +23,17 @@ const TRANSFER_TOPIC: &str =
 /// Default Base mainnet RPC
 const DEFAULT_RPC: &str = "https://mainnet.base.org";
 
+/// Maximum number of retries for RPC calls.
+const RPC_MAX_RETRIES: u32 = 3;
+
+/// Base delay for exponential backoff in milliseconds.
+const RPC_BASE_DELAY_MS: u64 = 200;
+
 /// Base Mainnet indexer for fetching wallet transaction history.
 pub struct BaseIndexer {
     rpc_url: String,
     client: reqwest::Client,
+    usdc_contract: String,
 }
 
 impl BaseIndexer {
@@ -35,12 +42,24 @@ impl BaseIndexer {
         Self {
             rpc_url: rpc_url.to_string(),
             client: reqwest::Client::new(),
+            usdc_contract: DEFAULT_USDC_BASE.to_string(),
         }
+    }
+
+    /// Create a new indexer with a custom USDC contract address.
+    pub fn with_usdc_contract(mut self, usdc_contract: &str) -> Self {
+        self.usdc_contract = usdc_contract.to_string();
+        self
     }
 
     /// Create a new indexer with the default Base mainnet RPC.
     pub fn default_rpc() -> Self {
         Self::new(DEFAULT_RPC)
+    }
+
+    /// Get the USDC contract address used by this indexer.
+    pub fn usdc_contract(&self) -> &str {
+        &self.usdc_contract
     }
 
     /// Get the current block number.
@@ -69,7 +88,7 @@ impl BaseIndexer {
         // Fetch transfers FROM the wallet
         let from_logs = self
             .get_logs(
-                USDC_BASE,
+                &self.usdc_contract,
                 TRANSFER_TOPIC,
                 Some(&wallet_padded),
                 None,
@@ -82,7 +101,7 @@ impl BaseIndexer {
         // Fetch transfers TO the wallet
         let to_logs = self
             .get_logs(
-                USDC_BASE,
+                &self.usdc_contract,
                 TRANSFER_TOPIC,
                 None,
                 Some(&wallet_padded),
@@ -163,7 +182,7 @@ impl BaseIndexer {
             match self.get_block_timestamp(block).await {
                 Ok(t) => *ts = t,
                 Err(e) => {
-                    eprintln!("WARNING: failed to get timestamp for block {}: {}", block, e);
+                    tracing::warn!(block, error = %e, "failed to get timestamp for block");
                 }
             }
         }
@@ -190,10 +209,7 @@ impl BaseIndexer {
                         tx.gas_price = gas_price;
                     }
                     Err(e) => {
-                        eprintln!(
-                            "WARNING: failed to get receipt for tx {}: {}",
-                            tx.tx_hash, e
-                        );
+                        tracing::warn!(tx_hash = %tx.tx_hash, error = %e, "failed to get receipt for tx");
                     }
                 }
             }
@@ -228,7 +244,7 @@ impl BaseIndexer {
         })
     }
 
-    /// Make a JSON-RPC call to the Base node.
+    /// Make a JSON-RPC call to the Base node with exponential backoff retry.
     async fn rpc_call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
         let body = serde_json::json!({
             "jsonrpc": "2.0",
@@ -237,23 +253,51 @@ impl BaseIndexer {
             "id": 1,
         });
 
-        let resp = self
-            .client
-            .post(&self.rpc_url)
-            .json(&body)
-            .send()
-            .await
-            .wrap_err("RPC request failed")?;
+        let mut last_error = None;
 
-        let json: serde_json::Value = resp.json().await.wrap_err("Failed to parse RPC response")?;
+        for attempt in 0..=RPC_MAX_RETRIES {
+            if attempt > 0 {
+                let delay_ms = RPC_BASE_DELAY_MS * (1 << (attempt - 1));
+                tracing::warn!(method, attempt, delay_ms, "retrying RPC call");
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
 
-        if let Some(error) = json.get("error") {
-            eyre::bail!("RPC error: {}", error);
+            let resp = match self.client.post(&self.rpc_url).json(&body).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    last_error = Some(eyre::eyre!("RPC request failed: {}", e));
+                    continue;
+                }
+            };
+
+            // Handle HTTP 429 (rate limit) as retryable
+            if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                last_error = Some(eyre::eyre!("RPC rate limited (HTTP 429)"));
+                continue;
+            }
+
+            // Handle other HTTP errors as retryable
+            if resp.status().is_server_error() {
+                last_error = Some(eyre::eyre!("RPC server error: HTTP {}", resp.status()));
+                continue;
+            }
+
+            let json: serde_json::Value = resp
+                .json()
+                .await
+                .wrap_err("Failed to parse RPC response")?;
+
+            if let Some(error) = json.get("error") {
+                eyre::bail!("RPC error: {}", error);
+            }
+
+            return json
+                .get("result")
+                .cloned()
+                .ok_or_else(|| eyre::eyre!("missing result in RPC response"));
         }
 
-        json.get("result")
-            .cloned()
-            .ok_or_else(|| eyre::eyre!("missing result in RPC response"))
+        Err(last_error.unwrap_or_else(|| eyre::eyre!("RPC call failed after retries")))
     }
 
     /// Fetch logs matching the given filter.

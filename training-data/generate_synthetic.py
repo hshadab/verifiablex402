@@ -18,7 +18,7 @@ import os
 
 random.seed(42)
 
-NUM_SAMPLES_PER_CLASS = 200
+NUM_SAMPLES_PER_CLASS = 2000
 NUM_FEATURES = 24
 OUTPUT_FILE = os.path.join(os.path.dirname(__file__), "training_features.csv")
 
@@ -49,12 +49,18 @@ def clip_normalize(value, lo, hi):
     return int((clamped - lo) / (hi - lo) * 128)
 
 
-def gen_genuine_commerce():
+def gen_genuine_commerce(edge_case=False):
     """Generate features for genuine commerce wallet."""
-    tx_count = random.uniform(20, 300)
-    unique_cp = random.uniform(10, 150)
-    entropy = random.uniform(2.0, 5.0)
-    avg_val = random.uniform(1e6, 5e7)  # 1-50 USDC
+    if edge_case:
+        # Edge: very high tx count outlier
+        tx_count = random.uniform(400, 500)
+        unique_cp = random.uniform(150, 200)
+        entropy = random.uniform(4.5, 5.3)
+    else:
+        tx_count = random.uniform(20, 300)
+        unique_cp = random.uniform(10, 150)
+        entropy = random.uniform(2.0, 5.0)
+    avg_val = random.uniform(1e6, 5e7)
     std_val = random.uniform(5e5, 3e7)
     max_val = avg_val + random.uniform(1e6, 5e7)
     min_val = max(0, avg_val - random.uniform(5e5, 2e7))
@@ -62,7 +68,7 @@ def gen_genuine_commerce():
     identical_ratio = random.uniform(0.05, 0.3)
     self_ratio = random.uniform(0, 0.05)
     circular = random.uniform(0, 0.1)
-    avg_time = random.uniform(300, 43200)  # 5min to 12h
+    avg_time = random.uniform(300, 43200)
     regularity = random.uniform(0.3, 2.0)
     burst = random.uniform(1, 15)
     night = random.uniform(0.05, 0.25)
@@ -83,11 +89,19 @@ def gen_genuine_commerce():
     return [clip_normalize(v, lo, hi) for v, (lo, hi) in zip(raw, RANGES)]
 
 
-def gen_low_activity():
+def gen_low_activity(edge_case=False):
     """Generate features for low activity wallet."""
-    tx_count = random.uniform(1, 15)
-    unique_cp = random.uniform(1, 8)
-    entropy = random.uniform(0, 2.0)
+    if edge_case:
+        # Edge: 0-1 transaction wallet
+        tx_count = random.uniform(0, 1)
+        unique_cp = random.uniform(0, 1)
+        entropy = 0
+        tx_day = random.uniform(0, 0.01)
+    else:
+        tx_count = random.uniform(1, 15)
+        unique_cp = random.uniform(1, 8)
+        entropy = random.uniform(0, 2.0)
+        tx_day = random.uniform(0.01, 2)
     avg_val = random.uniform(1e5, 2e7)
     std_val = random.uniform(0, 1e7)
     max_val = avg_val + random.uniform(0, 1e7)
@@ -101,7 +115,6 @@ def gen_low_activity():
     burst = random.uniform(1, 5)
     night = random.uniform(0, 0.5)
     weekend = random.uniform(0, 0.5)
-    tx_day = random.uniform(0.01, 2)
     gas_eff = random.uniform(0.1, 0.9)
     io_ratio = random.uniform(0.2, 0.8)
     block_gap = random.uniform(500, 10000)
@@ -117,21 +130,26 @@ def gen_low_activity():
     return [clip_normalize(v, lo, hi) for v, (lo, hi) in zip(raw, RANGES)]
 
 
-def gen_scripted_benign():
+def gen_scripted_benign(edge_case=False):
     """Generate features for scripted benign wallet (payroll, subscriptions)."""
-    tx_count = random.uniform(100, 500)
+    if edge_case:
+        # Edge: max-value outlier (large payroll)
+        tx_count = random.uniform(400, 500)
+        avg_val = random.uniform(8e7, 1e8)
+    else:
+        tx_count = random.uniform(100, 500)
+        avg_val = random.uniform(5e6, 8e7)
     unique_cp = random.uniform(20, 200)
     entropy = random.uniform(2.5, 5.3)
-    avg_val = random.uniform(5e6, 8e7)
-    std_val = random.uniform(1e5, 5e6)  # low variance = regular amounts
+    std_val = random.uniform(1e5, 5e6)
     max_val = avg_val + random.uniform(1e5, 1e7)
     min_val = max(0, avg_val - random.uniform(1e5, 5e6))
     range_ratio = random.uniform(0.1, 0.5)
-    identical_ratio = random.uniform(0.2, 0.6)  # some repeated amounts
+    identical_ratio = random.uniform(0.2, 0.6)
     self_ratio = random.uniform(0, 0.05)
     circular = random.uniform(0, 0.05)
-    avg_time = random.uniform(60, 3600)  # very regular
-    regularity = random.uniform(0.05, 0.5)  # LOW CV = regular
+    avg_time = random.uniform(60, 3600)
+    regularity = random.uniform(0.05, 0.5)
     burst = random.uniform(1, 10)
     night = random.uniform(0.05, 0.2)
     weekend = random.uniform(0.05, 0.2)
@@ -151,19 +169,25 @@ def gen_scripted_benign():
     return [clip_normalize(v, lo, hi) for v, (lo, hi) in zip(raw, RANGES)]
 
 
-def gen_circular_payments():
+def gen_circular_payments(edge_case=False):
     """Generate features for circular payments wallet."""
+    if edge_case:
+        # Edge: mixed pattern — moderate circular with some genuine features
+        circular = random.uniform(0.2, 0.4)
+        unique_cp = random.uniform(10, 30)
+        entropy = random.uniform(1.5, 3.0)
+    else:
+        circular = random.uniform(0.3, 1.0)
+        unique_cp = random.uniform(3, 20)
+        entropy = random.uniform(0.5, 2.5)
     tx_count = random.uniform(20, 200)
-    unique_cp = random.uniform(3, 20)
-    entropy = random.uniform(0.5, 2.5)
     avg_val = random.uniform(5e6, 5e7)
     std_val = random.uniform(1e5, 1e7)
     max_val = avg_val + random.uniform(1e6, 2e7)
     min_val = max(0, avg_val - random.uniform(5e5, 1e7))
     range_ratio = random.uniform(0.2, 0.7)
     identical_ratio = random.uniform(0.3, 0.7)
-    self_ratio = random.uniform(0.1, 0.5)  # HIGH self-transfer
-    circular = random.uniform(0.3, 1.0)    # HIGH circular
+    self_ratio = random.uniform(0.1, 0.5)
     avg_time = random.uniform(60, 7200)
     regularity = random.uniform(0.2, 1.5)
     burst = random.uniform(3, 50)
@@ -171,7 +195,7 @@ def gen_circular_payments():
     weekend = random.uniform(0.1, 0.5)
     tx_day = random.uniform(3, 50)
     gas_eff = random.uniform(0.1, 0.5)
-    io_ratio = random.uniform(0.35, 0.65)  # balanced (cycling)
+    io_ratio = random.uniform(0.35, 0.65)
     block_gap = random.uniform(10, 2000)
     unique_vals = random.uniform(0.1, 0.5)
     small_ratio = random.uniform(0.05, 0.3)
@@ -185,31 +209,36 @@ def gen_circular_payments():
     return [clip_normalize(v, lo, hi) for v, (lo, hi) in zip(raw, RANGES)]
 
 
-def gen_wash_trading():
+def gen_wash_trading(edge_case=False):
     """Generate features for wash trading wallet."""
+    if edge_case:
+        # Edge: mixed pattern — some value variation to test boundaries
+        identical_ratio = random.uniform(0.4, 0.6)
+        unique_vals = random.uniform(0.15, 0.3)
+    else:
+        identical_ratio = random.uniform(0.6, 1.0)
+        unique_vals = random.uniform(0.01, 0.2)
     tx_count = random.uniform(50, 500)
-    unique_cp = random.uniform(1, 10)     # LOW diversity
-    entropy = random.uniform(0, 1.5)      # LOW entropy
+    unique_cp = random.uniform(1, 10)
+    entropy = random.uniform(0, 1.5)
     avg_val = random.uniform(1e6, 5e7)
-    std_val = random.uniform(0, 5e5)      # very LOW variance
+    std_val = random.uniform(0, 5e5)
     max_val = avg_val + random.uniform(0, 2e6)
     min_val = max(0, avg_val - random.uniform(0, 1e6))
-    range_ratio = random.uniform(0, 0.2)  # LOW range
-    identical_ratio = random.uniform(0.6, 1.0)  # VERY HIGH
+    range_ratio = random.uniform(0, 0.2)
     self_ratio = random.uniform(0.2, 0.8)
     circular = random.uniform(0.2, 0.9)
-    avg_time = random.uniform(10, 600)    # very fast
-    regularity = random.uniform(0, 0.3)   # VERY regular (bot)
-    burst = random.uniform(10, 100)       # HIGH burst
-    night = random.uniform(0.2, 0.8)      # bot runs at night
+    avg_time = random.uniform(10, 600)
+    regularity = random.uniform(0, 0.3)
+    burst = random.uniform(10, 100)
+    night = random.uniform(0.2, 0.8)
     weekend = random.uniform(0.2, 0.6)
     tx_day = random.uniform(10, 100)
     gas_eff = random.uniform(0.1, 0.4)
-    io_ratio = random.uniform(0.4, 0.6)   # balanced (cycling)
-    block_gap = random.uniform(1, 100)    # very frequent
-    unique_vals = random.uniform(0.01, 0.2)  # LOW
+    io_ratio = random.uniform(0.4, 0.6)
+    block_gap = random.uniform(1, 100)
     small_ratio = random.uniform(0, 0.3)
-    round_ratio = random.uniform(0.5, 1.0)  # HIGH round amounts
+    round_ratio = random.uniform(0.5, 1.0)
     span = random.uniform(1, 30)
 
     raw = [tx_count, unique_cp, entropy, avg_val, std_val, max_val, min_val,
@@ -235,12 +264,21 @@ CLASS_NAMES = [
     "WASH_TRADING",
 ]
 
+# 10% of samples per class are edge cases
+EDGE_CASE_RATIO = 0.10
+
 
 def main():
     rows = []
+    n_edge = int(NUM_SAMPLES_PER_CLASS * EDGE_CASE_RATIO)
+    n_normal = NUM_SAMPLES_PER_CLASS - n_edge
+
     for label, gen_fn in enumerate(GENERATORS):
-        for _ in range(NUM_SAMPLES_PER_CLASS):
-            features = gen_fn()
+        for _ in range(n_normal):
+            features = gen_fn(edge_case=False)
+            rows.append(features + [label])
+        for _ in range(n_edge):
+            features = gen_fn(edge_case=True)
             rows.append(features + [label])
 
     random.shuffle(rows)
@@ -250,7 +288,7 @@ def main():
         writer.writerow(FEATURE_NAMES + ["label"])
         writer.writerows(rows)
 
-    print(f"Generated {len(rows)} samples ({NUM_SAMPLES_PER_CLASS} per class)")
+    print(f"Generated {len(rows)} samples ({NUM_SAMPLES_PER_CLASS} per class, {n_edge} edge cases each)")
     print(f"Classes: {CLASS_NAMES}")
     print(f"Output: {OUTPUT_FILE}")
 

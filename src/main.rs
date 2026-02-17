@@ -276,55 +276,76 @@ fn cmd_scan(
     rpc_url: String,
     output_dir: Option<PathBuf>,
 ) -> Result<()> {
+    use futures::stream::{self, StreamExt};
+
     let content = fs::read_to_string(&input)?;
-    let wallets: Vec<&str> = content
+    let wallets: Vec<String> = content
         .lines()
-        .map(|l| l.trim())
+        .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty() && l.starts_with("0x"))
         .collect();
 
     eprintln!("Scanning {} wallets...", wallets.len());
 
     let rt = tokio::runtime::Runtime::new()?;
-    let indexer = verifiablex402::indexer::BaseIndexer::new(&rpc_url);
+    let indexer = std::sync::Arc::new(verifiablex402::indexer::BaseIndexer::new(&rpc_url));
 
     if let Some(ref dir) = output_dir {
         fs::create_dir_all(dir)?;
     }
 
-    for (i, wallet) in wallets.iter().enumerate() {
-        eprintln!("[{}/{}] Scanning {}...", i + 1, wallets.len(), wallet);
+    let concurrency = 4usize;
+    let output_dir_arc = output_dir.clone().map(std::sync::Arc::new);
+    let total = wallets.len();
 
-        let activity = match rt.block_on(indexer.scan_wallet(wallet, 302400)) {
-            Ok(a) => a,
-            Err(e) => {
-                eprintln!("  ERROR: {}", e);
-                continue;
-            }
-        };
+    rt.block_on(async {
+        let results: Vec<_> = stream::iter(wallets.into_iter().enumerate())
+            .map(|(i, wallet)| {
+                let indexer = indexer.clone();
+                let output_dir = output_dir_arc.clone();
+                async move {
+                    eprintln!("[{}/{}] Scanning {}...", i + 1, total, wallet);
 
-        let features = TransactionFeatures::extract(&activity);
-        match verifiablex402::run_guardrail(&features, wallet, 8453, prove) {
-            Ok((receipt, _)) => {
-                println!(
-                    "{}: {} ({}, {:.1}% confidence)",
-                    wallet,
-                    receipt.evaluation.classification,
-                    receipt.evaluation.decision,
-                    receipt.evaluation.confidence * 100.0
-                );
+                    let activity = match indexer.scan_wallet(&wallet, 302400).await {
+                        Ok(a) => a,
+                        Err(e) => {
+                            eprintln!("  ERROR: {}", e);
+                            return;
+                        }
+                    };
 
-                if let Some(ref dir) = output_dir {
-                    let filename = format!("{}.receipt.json", wallet);
-                    let path = dir.join(&filename);
-                    let _ = fs::write(&path, serde_json::to_string_pretty(&receipt)?);
+                    let features = TransactionFeatures::extract(&activity);
+                    match verifiablex402::run_guardrail(&features, &wallet, 8453, prove) {
+                        Ok((receipt, _)) => {
+                            println!(
+                                "{}: {} ({}, {:.1}% confidence)",
+                                wallet,
+                                receipt.evaluation.classification,
+                                receipt.evaluation.decision,
+                                receipt.evaluation.confidence * 100.0
+                            );
+
+                            if let Some(ref dir) = output_dir {
+                                let filename = format!("{}.receipt.json", wallet);
+                                let path = dir.join(&filename);
+                                let _ = fs::write(
+                                    &path,
+                                    serde_json::to_string_pretty(&receipt).unwrap_or_default(),
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("  ERROR: {}", e);
+                        }
+                    }
                 }
-            }
-            Err(e) => {
-                eprintln!("  ERROR: {}", e);
-            }
-        }
-    }
+            })
+            .buffer_unordered(concurrency)
+            .collect()
+            .await;
+
+        drop(results);
+    });
 
     Ok(())
 }
@@ -568,6 +589,12 @@ fn cmd_serve(
         rpc_url: rpc,
         require_payment: payment,
         payment_amount: "5000".to_string(),
+        payment_payee: cfg.payment_payee,
+        usdc_contract: cfg.usdc_contract,
+        allowed_origins: cfg.allowed_origins,
+        api_keys: cfg.api_keys,
+        cache_ttl_seconds: cfg.cache_ttl_seconds.unwrap_or(300),
+        cache_max_entries: cfg.cache_max_entries.unwrap_or(1000),
     };
 
     tracing::info!("starting verifiablex402 server");

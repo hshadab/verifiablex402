@@ -1,0 +1,430 @@
+openapi: 3.1.0
+info:
+  title: verifiablex402 API
+  description: >
+    x402 Transaction Integrity Analyzer — classifies wallet transaction patterns
+    on Base mainnet with zkML proof verification using JOLT Atlas.
+  version: 0.1.0
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: Returns server status, model info, and RPC connectivity.
+      responses:
+        "200":
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      description: Returns metrics in Prometheus text exposition format.
+      responses:
+        "200":
+          description: Metrics in Prometheus format
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /guardrail/integrity:
+    post:
+      summary: Evaluate wallet integrity
+      description: >
+        Evaluates wallet transaction integrity using a 24-feature MLP classifier.
+        Supports raw feature vectors, structured TransactionFeatures, or full
+        WalletActivity data. Optionally generates a JOLT Atlas ZK proof.
+      security:
+        - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IntegrityRequest"
+      responses:
+        "200":
+          description: Evaluation completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IntegrityResponse"
+        "400":
+          description: Invalid request (e.g., wrong feature count)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IntegrityResponse"
+        "401":
+          description: Missing or invalid API key
+        "402":
+          description: x402 payment required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IntegrityResponse"
+        "429":
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IntegrityResponse"
+        "500":
+          description: Internal evaluation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IntegrityResponse"
+
+  /api/v1/scan:
+    post:
+      summary: Scan wallet from Base mainnet
+      description: >
+        Fetches USDC Transfer events for the given wallet address from Base
+        mainnet via RPC, extracts features, and evaluates integrity.
+      security:
+        - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScanWalletRequest"
+      responses:
+        "200":
+          description: Scan completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IntegrityResponse"
+        "401":
+          description: Missing or invalid API key
+        "402":
+          description: x402 payment required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IntegrityResponse"
+        "429":
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IntegrityResponse"
+        "500":
+          description: Internal evaluation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IntegrityResponse"
+        "502":
+          description: Failed to fetch wallet data from RPC
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IntegrityResponse"
+
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for protected endpoints (optional when no keys configured)
+
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, version, model_hash, model_name, model_params, uptime_seconds, rpc_connected]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        version:
+          type: string
+          example: "0.1.0"
+        model_hash:
+          type: string
+          example: "sha256:abc123..."
+        model_name:
+          type: string
+          example: "tx-integrity"
+        model_params:
+          type: integer
+          example: 2417
+        uptime_seconds:
+          type: integer
+        rpc_connected:
+          type: boolean
+
+    IntegrityRequest:
+      type: object
+      properties:
+        wallet_activity:
+          $ref: "#/components/schemas/WalletActivity"
+        features:
+          type: array
+          items:
+            type: integer
+          minItems: 24
+          maxItems: 24
+        transaction_features:
+          $ref: "#/components/schemas/TransactionFeatures"
+        wallet_address:
+          type: string
+        chain_id:
+          type: integer
+          default: 8453
+        generate_proof:
+          type: boolean
+          default: false
+        payment:
+          $ref: "#/components/schemas/PaymentInfo"
+
+    ScanWalletRequest:
+      type: object
+      required: [wallet_address]
+      properties:
+        wallet_address:
+          type: string
+          example: "0x1234..."
+        lookback_blocks:
+          type: integer
+          default: 302400
+          description: "Number of blocks to look back (~7 days at 2s/block)"
+        generate_proof:
+          type: boolean
+          default: false
+        payment:
+          $ref: "#/components/schemas/PaymentInfo"
+
+    IntegrityResponse:
+      type: object
+      required: [success, processing_time_ms]
+      properties:
+        success:
+          type: boolean
+        error:
+          type: string
+        receipt:
+          $ref: "#/components/schemas/GuardrailReceipt"
+        processing_time_ms:
+          type: integer
+
+    GuardrailReceipt:
+      type: object
+      required: [version, receipt_id, timestamp, guardrail, subject, evaluation, proof, nonce]
+      properties:
+        version:
+          type: string
+          example: "1.0.0"
+        receipt_id:
+          type: string
+          example: "gr_integrity_abc12345"
+        timestamp:
+          type: string
+          format: date-time
+        guardrail:
+          type: object
+          properties:
+            domain:
+              type: string
+              example: "integrity"
+            action_type:
+              type: string
+              example: "evaluate_wallet"
+            policy_id:
+              type: string
+              example: "icme:tx-integrity-v1"
+            model_hash:
+              type: string
+        subject:
+          type: object
+          properties:
+            commitment:
+              type: string
+              example: "sha256:..."
+            description:
+              type: string
+            uri:
+              type: string
+              example: "eip155:8453/address/0x..."
+        evaluation:
+          type: object
+          properties:
+            decision:
+              type: string
+              enum: [allow, flag, deny]
+            classification:
+              type: string
+              enum: [GENUINE_COMMERCE, LOW_ACTIVITY, SCRIPTED_BENIGN, CIRCULAR_PAYMENTS, WASH_TRADING]
+            confidence:
+              type: number
+              minimum: 0
+              maximum: 1
+            scores:
+              type: object
+              properties:
+                GENUINE_COMMERCE:
+                  type: number
+                LOW_ACTIVITY:
+                  type: number
+                SCRIPTED_BENIGN:
+                  type: number
+                CIRCULAR_PAYMENTS:
+                  type: number
+                WASH_TRADING:
+                  type: number
+            reasoning:
+              type: string
+        proof:
+          type: object
+          properties:
+            system:
+              type: string
+              example: "jolt-atlas"
+            proof_bytes:
+              type: string
+              description: Base64-encoded proof
+            verification_key_hash:
+              type: string
+            prove_time_ms:
+              type: integer
+            program_io:
+              type: string
+        payment:
+          $ref: "#/components/schemas/PaymentInfo"
+        nonce:
+          type: string
+          description: 64-character hex nonce
+        metadata:
+          type: object
+          properties:
+            prover_version:
+              type: string
+            jolt_atlas_version:
+              type: string
+            input_features_count:
+              type: integer
+            model_params_count:
+              type: integer
+
+    PaymentInfo:
+      type: object
+      required: [network, asset, amount, payer, payee, tx_hash, scheme]
+      properties:
+        network:
+          type: string
+          example: "eip155:8453"
+        asset:
+          type: string
+          example: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+        amount:
+          type: string
+          example: "5000"
+        payer:
+          type: string
+        payee:
+          type: string
+        tx_hash:
+          type: string
+        scheme:
+          type: string
+          example: "exact"
+
+    WalletActivity:
+      type: object
+      required: [wallet_address, chain_id, from_block, to_block, transactions]
+      properties:
+        wallet_address:
+          type: string
+        chain_id:
+          type: integer
+        from_block:
+          type: integer
+        to_block:
+          type: integer
+        transactions:
+          type: array
+          items:
+            type: object
+            properties:
+              tx_hash:
+                type: string
+              from:
+                type: string
+              to:
+                type: string
+              value:
+                type: integer
+              timestamp:
+                type: integer
+              block_number:
+                type: integer
+              gas_used:
+                type: integer
+              gas_price:
+                type: integer
+
+    TransactionFeatures:
+      type: object
+      description: 24 pre-computed transaction features (see docs/adr/001-fixed-point-arithmetic.md)
+      properties:
+        tx_count:
+          type: number
+        unique_counterparties:
+          type: number
+        counterparty_entropy:
+          type: number
+        avg_value:
+          type: number
+        std_value:
+          type: number
+        max_value:
+          type: number
+        min_value:
+          type: number
+        value_range_ratio:
+          type: number
+        identical_amount_ratio:
+          type: number
+        self_transfer_ratio:
+          type: number
+        circular_path_score:
+          type: number
+        avg_time_between_tx:
+          type: number
+        time_regularity:
+          type: number
+        burst_score:
+          type: number
+        night_ratio:
+          type: number
+        weekend_ratio:
+          type: number
+        tx_per_day:
+          type: number
+        gas_efficiency:
+          type: number
+        inflow_outflow_ratio:
+          type: number
+        avg_block_gap:
+          type: number
+        unique_values_ratio:
+          type: number
+        small_tx_ratio:
+          type: number
+        round_amount_ratio:
+          type: number
+        activity_span_days:
+          type: number

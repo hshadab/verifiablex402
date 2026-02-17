@@ -12,11 +12,15 @@
 //! - **CIRCULAR_PAYMENTS**: Funds cycling through intermediaries
 //! - **WASH_TRADING**: Fake volume with bot-like patterns
 
+pub mod auth;
+pub mod cache;
 pub mod config;
 pub mod encoding;
 pub mod enforcement;
 pub mod indexer;
+pub mod metrics;
 pub mod models;
+pub mod payment;
 pub mod proving;
 pub mod receipt;
 pub mod server;

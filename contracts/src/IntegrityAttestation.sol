@@ -1,13 +1,20 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+
 /**
  * @title IntegrityAttestation
  * @notice Stores zkML proof attestations and wallet classifications on-chain
- * @dev Proof hashes are submitted by authorized attesters. Stores both proof
- *      validity and the latest integrity classification per wallet.
+ * @dev Uses OpenZeppelin AccessControl for role-based authorization.
+ *      DEFAULT_ADMIN_ROLE manages roles. ATTESTER_ROLE can submit proofs
+ *      and record classifications.
  */
-contract IntegrityAttestation {
+contract IntegrityAttestation is AccessControl {
+    // ============ Roles ============
+
+    bytes32 public constant ATTESTER_ROLE = keccak256("ATTESTER_ROLE");
+
     // ============ Types ============
 
     enum Classification {
@@ -28,17 +35,11 @@ contract IntegrityAttestation {
 
     // ============ State Variables ============
 
-    /// @notice Owner of the contract
-    address public owner;
-
     /// @notice Mapping of valid proof hashes
     mapping(bytes32 => bool) public validProofs;
 
     /// @notice Mapping of proof hash to submission timestamp
     mapping(bytes32 => uint256) public proofTimestamps;
-
-    /// @notice Mapping of authorized attesters
-    mapping(address => bool) public attesters;
 
     /// @notice Mapping of wallet address to latest classification
     mapping(address => WalletRecord) public walletRecords;
@@ -65,14 +66,8 @@ contract IntegrityAttestation {
         uint256 timestamp
     );
 
-    event AttesterAdded(address indexed attester);
-    event AttesterRemoved(address indexed attester);
-    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
-
     // ============ Errors ============
 
-    error NotAuthorized();
-    error NotOwner();
     error ProofAlreadyAttested();
     error InvalidProofHash();
     error InvalidConfidence();
@@ -80,23 +75,8 @@ contract IntegrityAttestation {
     // ============ Constructor ============
 
     constructor() {
-        owner = msg.sender;
-        attesters[msg.sender] = true;
-        emit AttesterAdded(msg.sender);
-    }
-
-    // ============ Modifiers ============
-
-    modifier onlyOwner() {
-        if (msg.sender != owner) revert NotOwner();
-        _;
-    }
-
-    modifier onlyAttester() {
-        if (!attesters[msg.sender] && msg.sender != owner) {
-            revert NotAuthorized();
-        }
-        _;
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(ATTESTER_ROLE, msg.sender);
     }
 
     // ============ External Functions ============
@@ -105,7 +85,7 @@ contract IntegrityAttestation {
      * @notice Submit a proof attestation
      * @param proofHash The keccak256 hash of the zkML proof
      */
-    function attestProof(bytes32 proofHash) external onlyAttester {
+    function attestProof(bytes32 proofHash) external onlyRole(ATTESTER_ROLE) {
         if (proofHash == bytes32(0)) revert InvalidProofHash();
         if (validProofs[proofHash]) revert ProofAlreadyAttested();
 
@@ -128,7 +108,7 @@ contract IntegrityAttestation {
         Classification classification,
         uint8 confidence,
         bytes32 proofHash
-    ) external onlyAttester {
+    ) external onlyRole(ATTESTER_ROLE) {
         if (proofHash == bytes32(0)) revert InvalidProofHash();
         if (confidence > 100) revert InvalidConfidence();
 
@@ -212,39 +192,11 @@ contract IntegrityAttestation {
     }
 
     /**
-     * @notice Add an authorized attester
-     * @param attester The address to authorize
-     */
-    function addAttester(address attester) external onlyOwner {
-        attesters[attester] = true;
-        emit AttesterAdded(attester);
-    }
-
-    /**
-     * @notice Remove an authorized attester
-     * @param attester The address to remove
-     */
-    function removeAttester(address attester) external onlyOwner {
-        attesters[attester] = false;
-        emit AttesterRemoved(attester);
-    }
-
-    /**
-     * @notice Transfer ownership
-     * @param newOwner The new owner address
-     */
-    function transferOwnership(address newOwner) external onlyOwner {
-        address previousOwner = owner;
-        owner = newOwner;
-        emit OwnershipTransferred(previousOwner, newOwner);
-    }
-
-    /**
      * @notice Check if an address is an authorized attester
      * @param attester The address to check
-     * @return True if the address is authorized
+     * @return True if the address has ATTESTER_ROLE
      */
     function isAttester(address attester) external view returns (bool) {
-        return attesters[attester] || attester == owner;
+        return hasRole(ATTESTER_ROLE, attester);
     }
 }

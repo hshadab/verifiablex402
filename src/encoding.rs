@@ -38,7 +38,7 @@ pub fn encode_raw_or_default(features: &[i32]) -> Vec<i32> {
     match validate_features(features) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("WARNING: encoding: {}", e);
+            tracing::warn!(error = %e, "encoding validation failed, using zero vector");
             vec![0i32; FEATURE_DIM]
         }
     }

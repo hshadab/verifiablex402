@@ -1,5 +1,7 @@
 # verifiablex402
 
+> Powered by [Jolt Atlas zkML](https://github.com/ICME-Lab/jolt-atlas)
+
 Transaction integrity analyzer for x402 payments on Base. It looks at a wallet's
 USDC transaction history, runs it through a small neural network, and tells you
 whether the activity looks like real commerce, wash trading, circular payments,
@@ -27,6 +29,9 @@ the RPC:
   avoids duplicate calls when multiple transactions share a block.
 - **Gas backfill** — for each transaction, it calls `eth_getTransactionReceipt`
   to get `gasUsed` and `effectiveGasPrice`.
+
+RPC calls use **exponential backoff retry** (3 attempts with 200ms/400ms/800ms
+delays). HTTP 429 (rate limit) and 5xx server errors are treated as retryable.
 
 These two backfill steps are critical. Without real timestamps, seven of the 24
 features (average time between transactions, time regularity, burst score, night
@@ -158,20 +163,39 @@ verifiablex402/
 │   ├── encoding.rs          # Feature normalization to [0, 128]
 │   ├── enforcement.rs       # Allow / Flag / Deny decision logic
 │   ├── receipt.rs           # Guardrail Receipt construction (CSPRNG nonces)
-│   ├── proving.rs           # JOLT Atlas ZK proof generation/verification (cached preprocessing)
-│   ├── indexer.rs           # Base mainnet JSON-RPC indexer (with timestamp + gas backfill)
-│   ├── server.rs            # Axum HTTP server (CORS, tracing, payment enforcement)
+│   ├── proving.rs           # JOLT Atlas ZK proof generation/verification
+│   ├── indexer.rs           # Base mainnet JSON-RPC indexer (retry + backfill)
+│   ├── server.rs            # Axum HTTP server (CORS, auth, metrics, cache)
+│   ├── payment.rs           # On-chain USDC payment verification
+│   ├── auth.rs              # API key middleware (X-API-Key header)
+│   ├── cache.rs             # LRU wallet result cache (moka)
+│   ├── metrics.rs           # Prometheus metrics recording
 │   └── models/
 │       └── tx_integrity.rs  # MLP [24 → 36 → 36 → 5]
-├── training-data/
-│   ├── generate_synthetic.py  # Generate labeled training data
-│   ├── train_classifier.py    # Train the PyTorch model
-│   └── export_to_rust.py      # Quantize weights → Rust const arrays
-├── contracts/
-│   └── src/
-│       └── IntegrityAttestation.sol  # On-chain proof attestation
 ├── tests/
-│   └── integration.rs        # 24 integration tests
+│   └── integration.rs       # Integration tests
+├── contracts/
+│   ├── src/
+│   │   └── IntegrityAttestation.sol  # On-chain attestation (OpenZeppelin AccessControl)
+│   ├── test/
+│   │   └── IntegrityAttestation.t.sol  # Foundry tests
+│   └── foundry.toml
+├── training-data/
+│   ├── generate_synthetic.py  # Generate labeled training data (10,000 samples)
+│   ├── train_classifier.py    # Train PyTorch model + export metrics
+│   ├── export_to_rust.py      # Quantize weights → Rust const arrays
+│   └── validate_model.py      # Verify quantization accuracy (< 1% delta)
+├── docs/
+│   └── adr/
+│       ├── 001-fixed-point-arithmetic.md
+│       ├── 002-jolt-atlas-proof-system.md
+│       └── 003-synthetic-training-data.md
+├── .github/
+│   └── workflows/
+│       └── ci.yml             # Rust + Solidity CI pipeline
+├── openapi.yaml               # OpenAPI 3.1 specification
+├── Dockerfile                 # Workspace-context Docker build
+├── render.yaml                # Render deployment config
 └── Cargo.toml
 ```
 
@@ -194,6 +218,7 @@ jolt-atlas/
 
 You also need:
 - **Rust 1.88+** (the `rust-toolchain.toml` pins this)
+- **RISC-V target**: `rustup target add riscv32im-unknown-none-elf`
 - **Python 3.8+** with PyTorch (only if retraining the model)
 - The `dory_srs_22_variables.srs` file in the project root (symlinked from
   jolt-atlas; needed for ZK proof generation)
@@ -214,11 +239,14 @@ The crate ships with trained weights. To retrain on synthetic data:
 ```bash
 cd training-data/
 
-# Generate 1,000 labeled samples (200 per class)
+# Generate 10,000 labeled samples (2,000 per class, 10% edge cases)
 python generate_synthetic.py
 
-# Train the MLP (~100 epochs)
+# Train the MLP (~100 epochs), exports training_metrics.json
 python train_classifier.py
+
+# Validate quantization accuracy (must be < 1% delta)
+python validate_model.py
 
 # Export quantized weights as Rust const arrays
 python export_to_rust.py
@@ -271,11 +299,16 @@ RUST_LOG=verifiablex402=debug verifiablex402 serve
 
 Endpoints:
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/health` | Health check, model hash, uptime |
-| `POST` | `/guardrail/integrity` | Evaluate wallet integrity (from features or activity data) |
-| `POST` | `/api/v1/scan` | Scan a wallet by address (fetches from Base) |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/health` | Open | Health check, model hash, uptime, RPC status |
+| `GET` | `/metrics` | Open | Prometheus metrics (scrape format) |
+| `POST` | `/guardrail/integrity` | API key | Evaluate wallet integrity (from features or activity data) |
+| `POST` | `/api/v1/scan` | API key | Scan a wallet by address (fetches from Base) |
+
+The `/health` and `/metrics` endpoints are always open (needed for Render health
+checks and Prometheus scraping). The `/guardrail/integrity` and `/api/v1/scan`
+endpoints require an API key when keys are configured.
 
 HTTP status codes:
 
@@ -283,10 +316,13 @@ HTTP status codes:
 |------|---------|
 | `200` | Evaluation succeeded |
 | `400` | Bad request (e.g. wrong number of features) |
-| `402` | Payment required (`--require-payment` enabled, no payment in request) |
+| `401` | Missing or invalid API key |
+| `402` | Payment required (`--require-payment` enabled, no valid payment) |
 | `429` | Rate limit exceeded |
 | `500` | Internal error during evaluation |
-| `502` | Failed to reach Base RPC |
+| `502` | Failed to reach Base RPC or payment verification error |
+
+See [`openapi.yaml`](openapi.yaml) for the full API specification.
 
 Example request to `/guardrail/integrity`:
 
@@ -360,6 +396,22 @@ bind = "0.0.0.0:8080"
 rate_limit_rpm = 120
 max_concurrent_proofs = 2
 require_payment = true
+
+# USDC contract address (defaults to canonical Base USDC)
+usdc_contract = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+
+# Payment payee address (for on-chain verification)
+payment_payee = "0xYourPayeeAddress"
+
+# Allowed CORS origins (empty = allow any origin)
+allowed_origins = ["https://yourdomain.com"]
+
+# API keys for authentication (empty = no auth required)
+api_keys = ["your-secret-key-1", "your-secret-key-2"]
+
+# Wallet result cache settings
+cache_ttl_seconds = 300     # 5 minutes
+cache_max_entries = 1000
 ```
 
 ### 8. Batch scan
@@ -369,17 +421,29 @@ require_payment = true
 verifiablex402 scan --input wallets.txt --output-dir results/
 ```
 
+Batch scans run with parallelism (4 concurrent wallet scans by default) using
+`futures::stream::buffer_unordered` for throughput.
+
 ### 9. Deploy the on-chain attestation contract (optional)
 
 The `contracts/` directory contains a Foundry project with
-`IntegrityAttestation.sol`. This contract stores proof hashes and wallet
-classifications on-chain.
+`IntegrityAttestation.sol`. This contract uses OpenZeppelin AccessControl for
+role-based authorization and stores proof hashes and wallet classifications
+on-chain.
 
 ```bash
 cd contracts/
+
+# Install dependencies
+forge install OpenZeppelin/openzeppelin-contracts --no-commit
+forge install foundry-rs/forge-std --no-commit
+
+# Build and test
 forge build
-forge test
-forge script --broadcast ...  # deploy to Base
+forge test -vv
+
+# Deploy to Base
+forge script --broadcast ...
 ```
 
 ### 10. Show model info
@@ -434,35 +498,135 @@ integer interval [0, 128] (fixed-point scale = 2^7).
 
 ## Security
 
+- **API key authentication** — protected endpoints (`/guardrail/integrity`,
+  `/api/v1/scan`) require an `X-API-Key` header when API keys are configured.
+  When no keys are set, all requests pass through (backward compatible).
+- **On-chain payment verification** — when `--require-payment` is enabled and a
+  `payment_payee` is configured, the server verifies payments on-chain by
+  fetching the transaction receipt and checking for a USDC Transfer event
+  matching the expected payee and amount.
+- **Configurable CORS** — set `allowed_origins` in the config file to restrict
+  which origins can call the API. Empty or unset means allow any origin
+  (development mode).
 - **CSPRNG nonces** — receipt IDs and nonces use `rand::thread_rng()`, a
-  cryptographically secure random number generator. Earlier versions used
-  `RandomState`-based hashing which is not cryptographically secure.
+  cryptographically secure random number generator.
 - **Fail-closed verification** — ZK proofs are verified locally before saving.
   If verification fails, the operation errors. Model hash mismatches cause
   immediate rejection.
-- **x402 payment enforcement** — when `--require-payment` is enabled, the server
-  returns HTTP 402 unless the request includes a valid payment with a non-empty
-  `tx_hash`.
 - **Rate limiting** — per-IP rate limiting via the `governor` crate. Configurable
   requests per minute, defaults to 60.
-- **CORS** — the server includes a CORS layer (via `tower-http`) allowing any
-  origin with GET and POST methods. Tighten `allow_origin` for production.
 - **Structured logging** — all server activity is logged via `tracing` with
   structured fields (wallet address, classification, processing time). Control
   verbosity with `RUST_LOG` (e.g. `RUST_LOG=verifiablex402=debug`).
 
+## Observability
+
+### Health check
+
+`GET /health` returns server status including RPC connectivity:
+
+```json
+{
+  "status": "ok",
+  "version": "0.1.0",
+  "model_hash": "sha256:...",
+  "model_name": "tx-integrity",
+  "model_params": 2417,
+  "uptime_seconds": 3600,
+  "rpc_connected": true
+}
+```
+
+The `status` field is `"ok"` when the RPC node is reachable (tested with a
+3-second timeout `eth_blockNumber` call) and `"degraded"` otherwise. The endpoint
+always returns HTTP 200 to avoid restart flapping on transient RPC issues.
+
+### Prometheus metrics
+
+`GET /metrics` returns metrics in Prometheus text exposition format:
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `evaluations_total` | Counter | `classification`, `decision` | Total evaluations performed |
+| `evaluation_duration_ms` | Histogram | — | Evaluation latency |
+| `rpc_calls_total` | Counter | `method`, `success` | Total RPC calls made |
+| `rpc_call_duration_ms` | Histogram | — | RPC call latency |
+| `rate_limit_hits_total` | Counter | — | Rate limit rejections |
+| `payment_checks_total` | Counter | `result` | Payment verification outcomes |
+| `cache_hits_total` | Counter | — | Wallet cache hits |
+| `cache_misses_total` | Counter | — | Wallet cache misses |
+
+### Wallet result cache
+
+The `/api/v1/scan` endpoint caches results keyed by `wallet_address:lookback_blocks`.
+Configurable via `cache_ttl_seconds` (default 300s) and `cache_max_entries`
+(default 1000). Uses the `moka` crate (concurrent LRU with TTL eviction).
+
+## Docker
+
+The Dockerfile expects the **jolt-atlas workspace root** as the build context:
+
+```bash
+# From the jolt-atlas workspace root:
+docker build -t verifiablex402 -f verifiablex402/Dockerfile .
+docker run -p 10000:10000 verifiablex402
+```
+
+The image verifies SRS file checksums at startup before launching the server.
+
+## CI
+
+The GitHub Actions CI pipeline (`.github/workflows/ci.yml`) runs on push to
+`main` and pull requests:
+
+- **Rust job**: clones jolt-atlas workspace, runs `cargo fmt --check`,
+  `cargo clippy -D warnings`, and `cargo test --release` for the
+  `verifiablex402` package.
+- **Solidity job**: installs Foundry, runs `forge build` and `forge test -vv`
+  in the `contracts/` directory.
+
+## Smart contract
+
+`IntegrityAttestation.sol` uses OpenZeppelin `AccessControl` for role management:
+
+- **`DEFAULT_ADMIN_ROLE`** — manages all roles (granted to deployer)
+- **`ATTESTER_ROLE`** — can submit proof attestations and record wallet
+  classifications (granted to deployer, additional attesters added via
+  `grantRole`)
+
+Key functions:
+
+| Function | Access | Description |
+|----------|--------|-------------|
+| `attestProof(bytes32)` | `ATTESTER_ROLE` | Register a proof hash on-chain |
+| `recordClassification(address, Classification, uint8, bytes32)` | `ATTESTER_ROLE` | Record wallet classification with proof |
+| `isWalletSuspicious(address)` | Public view | Returns true for CircularPayments or WashTrading |
+| `isProofHashValid(bytes32)` | Public view | Check if a proof hash was attested |
+| `getWalletClassification(address)` | Public view | Get latest classification for a wallet |
+| `grantRole(bytes32, address)` | `DEFAULT_ADMIN_ROLE` | Add new attesters or admins |
+| `revokeRole(bytes32, address)` | `DEFAULT_ADMIN_ROLE` | Remove attesters or admins |
+
 ## Tests
 
 ```bash
-# Run all tests (49 total: 25 unit + 24 integration)
-cargo test -p verifiablex402
+# Run all Rust tests
+cargo test -p verifiablex402 --release
 
 # Run just integration tests
-cargo test -p verifiablex402 --test integration
+cargo test -p verifiablex402 --test integration --release
 
-# Run the prove-verify integration test (requires --release for speed)
+# Run the prove-verify integration test
 cargo test -p verifiablex402 --test integration --release test_tx_integrity_prove_verify
+
+# Run Solidity tests
+cd contracts && forge test -vv
 ```
+
+## Architecture decision records
+
+- [ADR 001: Fixed-Point Arithmetic](docs/adr/001-fixed-point-arithmetic.md) — why i32 at scale 128, not f32
+- [ADR 002: JOLT Atlas Proof System](docs/adr/002-jolt-atlas-proof-system.md) — why JOLT Atlas over other ZK systems
+- [ADR 003: Synthetic Training Data](docs/adr/003-synthetic-training-data.md) — current approach + known limitations
 
 ## License
 

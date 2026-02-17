@@ -502,3 +502,237 @@ fn test_guard_model_properties() {
     assert_eq!(guard.name(), "tx-integrity");
     assert_eq!(guard.labels().len(), 5);
 }
+
+// ---------------------------------------------------------------------------
+// Payment verification tests (struct validation level)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_payment_info_struct_validation() {
+    use verifiablex402::receipt::PaymentInfo;
+
+    let payment = PaymentInfo {
+        network: "eip155:8453".to_string(),
+        asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913".to_string(),
+        amount: "5000".to_string(),
+        payer: "0xabc".to_string(),
+        payee: "0xdef".to_string(),
+        tx_hash: "0x123".to_string(),
+        scheme: "exact".to_string(),
+    };
+
+    assert_eq!(payment.network, "eip155:8453");
+    assert!(!payment.tx_hash.is_empty());
+}
+
+#[test]
+fn test_payment_info_empty_tx_hash() {
+    use verifiablex402::receipt::PaymentInfo;
+
+    let payment = PaymentInfo {
+        network: "eip155:8453".to_string(),
+        asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913".to_string(),
+        amount: "5000".to_string(),
+        payer: "0xabc".to_string(),
+        payee: "0xdef".to_string(),
+        tx_hash: "".to_string(),
+        scheme: "exact".to_string(),
+    };
+
+    assert!(payment.tx_hash.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// API key middleware tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_api_key_middleware_rejects_without_key() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        middleware,
+        routing::get,
+        Router,
+    };
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    let keys: verifiablex402::auth::ApiKeySet = Arc::new(
+        vec!["test-key-123".to_string()]
+            .into_iter()
+            .collect::<HashSet<_>>(),
+    );
+
+    let app = Router::new()
+        .route("/protected", get(|| async { "ok" }))
+        .route_layer(middleware::from_fn_with_state(
+            keys.clone(),
+            verifiablex402::auth::require_api_key,
+        ))
+        .with_state(keys);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/protected")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_api_key_middleware_accepts_valid_key() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        middleware,
+        routing::get,
+        Router,
+    };
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    let keys: verifiablex402::auth::ApiKeySet = Arc::new(
+        vec!["test-key-123".to_string()]
+            .into_iter()
+            .collect::<HashSet<_>>(),
+    );
+
+    let app = Router::new()
+        .route("/protected", get(|| async { "ok" }))
+        .route_layer(middleware::from_fn_with_state(
+            keys.clone(),
+            verifiablex402::auth::require_api_key,
+        ))
+        .with_state(keys);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/protected")
+                .header("x-api-key", "test-key-123")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_api_key_middleware_passthrough_when_no_keys() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        middleware,
+        routing::get,
+        Router,
+    };
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    let keys: verifiablex402::auth::ApiKeySet =
+        Arc::new(HashSet::<String>::new());
+
+    let app = Router::new()
+        .route("/protected", get(|| async { "ok" }))
+        .route_layer(middleware::from_fn_with_state(
+            keys.clone(),
+            verifiablex402::auth::require_api_key,
+        ))
+        .with_state(keys);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/protected")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+// ---------------------------------------------------------------------------
+// Health endpoint test
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_health_response_shape() {
+    use verifiablex402::server::HealthResponse;
+
+    let response = HealthResponse {
+        status: "ok".to_string(),
+        version: "0.1.0".to_string(),
+        model_hash: "sha256:abc".to_string(),
+        model_name: "tx-integrity".to_string(),
+        model_params: 2417,
+        uptime_seconds: 42,
+        rpc_connected: true,
+    };
+
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(json["status"], "ok");
+    assert_eq!(json["model_params"], 2417);
+    assert_eq!(json["rpc_connected"], true);
+    assert!(json["model_hash"].as_str().unwrap().starts_with("sha256:"));
+}
+
+// ---------------------------------------------------------------------------
+// Cache tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_wallet_cache_key_format() {
+    let key = verifiablex402::cache::WalletCache::key("0xABC", 302400);
+    assert_eq!(key, "0xabc:302400");
+}
+
+#[test]
+fn test_wallet_cache_insert_and_get() {
+    let cache = verifiablex402::cache::WalletCache::new(300, 100);
+    let features = TransactionFeatures::zeros();
+    let scores = IntegrityClassScores {
+        genuine_commerce: 0.8,
+        low_activity: 0.05,
+        scripted_benign: 0.05,
+        circular_payments: 0.05,
+        wash_trading: 0.05,
+    };
+
+    let receipt = verifiablex402::receipt::GuardrailReceipt::new_integrity_receipt(
+        "0xtest",
+        8453,
+        &features,
+        IntegrityClassification::GenuineCommerce,
+        IntegrityDecision::Allow,
+        "test",
+        scores,
+        0.8,
+        "sha256:test".to_string(),
+        "".to_string(),
+        "".to_string(),
+        None,
+        None,
+        [0u8; 32],
+    );
+
+    cache.insert("test:302400".to_string(), receipt.clone());
+    let cached = cache.get("test:302400");
+    assert!(cached.is_some());
+    assert_eq!(cached.unwrap().evaluation.classification, "GENUINE_COMMERCE");
+
+    // Miss for different key
+    assert!(cache.get("other:302400").is_none());
+}

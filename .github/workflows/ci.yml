@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust CI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout verifiablex402
+        uses: actions/checkout@v4
+        with:
+          path: verifiablex402
+
+      - name: Clone jolt-atlas workspace
+        run: git clone --depth 1 https://github.com/ICME-Lab/jolt-atlas.git workspace
+
+      - name: Replace verifiablex402 in workspace
+        run: |
+          rm -rf workspace/verifiablex402
+          cp -r verifiablex402 workspace/verifiablex402
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88"
+          components: rustfmt, clippy
+          targets: riscv32im-unknown-none-elf
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            workspace/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('workspace/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Check formatting
+        working-directory: workspace
+        run: cargo fmt -p verifiablex402 -- --check
+
+      - name: Clippy
+        working-directory: workspace
+        run: cargo clippy -p verifiablex402 -- -D warnings
+
+      - name: Test
+        working-directory: workspace
+        run: cargo test -p verifiablex402 --release
+
+  solidity:
+    name: Solidity CI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install dependencies
+        working-directory: contracts
+        run: |
+          forge install OpenZeppelin/openzeppelin-contracts --no-commit || true
+          forge install foundry-rs/forge-std --no-commit || true
+
+      - name: Build contracts
+        working-directory: contracts
+        run: forge build
+
+      - name: Run tests
+        working-directory: contracts
+        run: forge test -vv

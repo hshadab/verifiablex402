@@ -45,6 +45,19 @@ governor = "0.6"
 # HTTP client for Base RPC
 reqwest = { version = "0.12", features = ["json"] }
 
+# Caching
+moka = { version = "0.12", features = ["sync"] }
+
+# Metrics
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+
+# Async utilities
+futures = "0.3"
+
+# Tower (for test utilities)
+tower = "0.5"
+
 # ABI decoding for ERC-3009 events
 alloy-primitives = "0.8"
 alloy-sol-types = "0.8"

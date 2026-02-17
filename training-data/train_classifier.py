@@ -8,8 +8,10 @@ Architecture: MLP [24] -> [36] -> [36] -> [5]
 
 Reads: training_features.csv
 Outputs: tx_integrity_model.pt (PyTorch state dict)
+         training_metrics.json (training metrics for reproducibility)
 """
 
+import json
 import os
 import csv
 import torch
@@ -19,6 +21,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), "training_features.csv")
 MODEL_FILE = os.path.join(os.path.dirname(__file__), "tx_integrity_model.pt")
+METRICS_FILE = os.path.join(os.path.dirname(__file__), "training_metrics.json")
 
 INPUT_DIM = 24
 HIDDEN_DIM = 36
@@ -29,6 +32,14 @@ EPOCHS = 100
 BATCH_SIZE = 32
 LR = 0.001
 VALIDATION_SPLIT = 0.15
+
+CLASS_NAMES = [
+    "GENUINE_COMMERCE",
+    "LOW_ACTIVITY",
+    "SCRIPTED_BENIGN",
+    "CIRCULAR_PAYMENTS",
+    "WASH_TRADING",
+]
 
 
 class TxIntegrityMLP(nn.Module):
@@ -141,6 +152,52 @@ def train():
     print(f"Total parameters: {total_params}")
     for name, p in model.named_parameters():
         print(f"  {name}: {list(p.shape)} = {p.numel()}")
+
+    # Compute per-class accuracy and confusion matrix
+    model.eval()
+    with torch.no_grad():
+        val_outputs = model(X_val)
+        _, val_predicted = val_outputs.max(1)
+
+    confusion = [[0] * OUTPUT_DIM for _ in range(OUTPUT_DIM)]
+    per_class_correct = [0] * OUTPUT_DIM
+    per_class_total = [0] * OUTPUT_DIM
+
+    for true, pred in zip(y_val.tolist(), val_predicted.tolist()):
+        confusion[true][pred] += 1
+        per_class_total[true] += 1
+        if true == pred:
+            per_class_correct[true] += 1
+
+    per_class_acc = {}
+    for i, name in enumerate(CLASS_NAMES):
+        acc = per_class_correct[i] / per_class_total[i] if per_class_total[i] > 0 else 0.0
+        per_class_acc[name] = round(acc, 4)
+
+    # Export training metrics
+    metrics = {
+        "total_samples": n,
+        "train_samples": int(X_train.shape[0]),
+        "val_samples": int(X_val.shape[0]),
+        "best_val_accuracy": round(best_val_acc, 4),
+        "total_parameters": total_params,
+        "epochs": EPOCHS,
+        "batch_size": BATCH_SIZE,
+        "learning_rate": LR,
+        "per_class_accuracy": per_class_acc,
+        "confusion_matrix": {
+            "labels": CLASS_NAMES,
+            "matrix": confusion,
+        },
+    }
+
+    with open(METRICS_FILE, "w") as f:
+        json.dump(metrics, f, indent=2)
+
+    print(f"\nTraining metrics saved to {METRICS_FILE}")
+    print(f"Per-class accuracy:")
+    for name, acc in per_class_acc.items():
+        print(f"  {name}: {acc:.1%}")
 
     return model
 
